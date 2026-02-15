@@ -1,0 +1,19 @@
+# Dependencies
+frontend/node_modules/
+vigie-immo-backend/venv/
+
+# Build output
+frontend/dist/
+
+# Python
+__pycache__/
+*.pyc
+
+# Environment
+.env
+
+# Logs
+*.log
+
+# OS
+.DS_Store

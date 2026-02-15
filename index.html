@@ -1,0 +1,1190 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rapport de Risque Immobilier - Québec</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+
+        h1 {
+            color: #2d3748;
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            color: #718096;
+            font-size: 14px;
+        }
+
+        .search-section {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+
+        .search-form {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .input-group {
+            flex: 1;
+            min-width: 300px;
+        }
+
+        label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #2d3748;
+        }
+
+        input {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        button {
+            padding: 12px 32px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            align-self: flex-end;
+        }
+
+        button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .error-message {
+            background: #fed7d7;
+            color: #742a2a;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        .error-message.show {
+            display: block;
+        }
+
+        .results {
+            display: none;
+        }
+
+        .results.active {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .card {
+            background: white;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+
+        .card.full-width {
+            grid-column: 1 / -1;
+        }
+
+        .card h2 {
+            color: #2d3748;
+            font-size: 20px;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .icon {
+            width: 24px;
+            height: 24px;
+        }
+
+        #map {
+            height: 500px;
+            border-radius: 8px;
+            margin-top: 15px;
+            border: 1px solid #e2e8f0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            position: relative;
+        }
+
+        .map-controls {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .map-control-btn {
+            background: white;
+            border: 2px solid #667eea;
+            border-radius: 5px;
+            padding: 8px 12px;
+            font-size: 14px;
+            font-weight: 600;
+            color: #667eea;
+            cursor: pointer;
+            transition: all 0.2s;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .map-control-btn:hover {
+            background: #667eea;
+            color: white;
+            transform: translateY(-1px);
+        }
+
+        .map-control-btn.active {
+            background: #667eea;
+            color: white;
+        }
+
+        .info-grid {
+            display: grid;
+            gap: 15px;
+        }
+
+        .info-item {
+            padding: 15px;
+            background: #f7fafc;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+
+        .info-label {
+            font-weight: 600;
+            color: #4a5568;
+            font-size: 14px;
+            margin-bottom: 5px;
+        }
+
+        .info-value {
+            color: #2d3748;
+            font-size: 16px;
+        }
+
+        .risk-badge {
+            display: inline-block;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .risk-low {
+            background: #c6f6d5;
+            color: #22543d;
+        }
+
+        .risk-medium {
+            background: #feebc8;
+            color: #7c2d12;
+        }
+
+        .risk-high {
+            background: #fed7d7;
+            color: #742a2a;
+        }
+
+        .risk-unknown {
+            background: #e2e8f0;
+            color: #4a5568;
+        }
+
+        .service-list {
+            display: grid;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .service-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px;
+            background: #f7fafc;
+            border-radius: 6px;
+        }
+
+        .service-icon {
+            width: 20px;
+            height: 20px;
+        }
+
+        .distance {
+            margin-left: auto;
+            font-weight: 600;
+            color: #667eea;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #718096;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .site-list {
+            display: grid;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .site-item {
+            padding: 10px;
+            background: #fff5f5;
+            border-left: 3px solid #fc8181;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        .site-name {
+            font-weight: 600;
+            color: #742a2a;
+        }
+
+        .site-distance {
+            color: #a0aec0;
+            font-size: 12px;
+            margin-top: 3px;
+        }
+
+        .map-popup {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-size: 14px;
+            line-height: 1.4;
+        }
+
+        .map-popup strong {
+            color: #2d3748;
+            font-size: 15px;
+            margin-bottom: 5px;
+            display: block;
+        }
+
+        .info.legend {
+            background: white;
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+            font-size: 12px;
+            line-height: 1.4;
+        }
+
+        .info.legend strong {
+            display: block;
+            margin-bottom: 8px;
+            color: #2d3748;
+            font-size: 13px;
+        }
+
+        .leaflet-interactive {
+            cursor: pointer;
+        }
+
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(255, 255, 255, 0.9);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+
+        .loading-overlay.active {
+            display: flex;
+        }
+
+        .data-quality-warning {
+            background: #fefcbf;
+            color: #744210;
+            padding: 10px 15px;
+            border-radius: 6px;
+            border-left: 4px solid #ecc94b;
+            font-size: 13px;
+            margin-top: 10px;
+        }
+
+        .data-quality-warning.unavailable {
+            background: #fed7d7;
+            color: #742a2a;
+            border-left-color: #fc8181;
+        }
+
+        @media (max-width: 768px) {
+            .results.active {
+                grid-template-columns: 1fr;
+            }
+            #map {
+                height: 400px;
+            }
+            .map-controls {
+                top: 5px;
+                right: 5px;
+            }
+            .map-control-btn {
+                padding: 6px 10px;
+                font-size: 12px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Loading overlay -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading">
+            <div class="spinner"></div>
+            <p>Analyse en cours...</p>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="header">
+            <h1>🏠 Rapport de Risque Immobilier - Québec</h1>
+            <p class="subtitle">Analyse complète des risques et services pour courtiers d'assurance - Province de Québec</p>
+        </div>
+
+        <div class="error-message" id="errorMessage"></div>
+
+        <div class="search-section">
+            <form class="search-form" id="searchForm">
+                <div class="input-group">
+                    <label for="address">Adresse complète (Province de Québec)</label>
+                    <input 
+                        type="text" 
+                        id="address" 
+                        placeholder="Ex: 2, Rue de la Commune Ouest, Montréal, Québec" 
+                        required
+                        value="2, Rue de la Commune Ouest, Montréal, Québec"
+                    >
+                </div>
+                <button type="submit" id="searchBtn">
+                    🔍 Générer le rapport
+                </button>
+            </form>
+        </div>
+
+        <div class="results" id="results">
+            <div class="card full-width">
+                <h2>
+                    📍 Localisation et carte
+                </h2>
+                <div class="info-item">
+                    <div class="info-label">Adresse analysée</div>
+                    <div class="info-value" id="displayAddress">-</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Municipalité/Région</div>
+                    <div class="info-value" id="municipality">-</div>
+                </div>
+                <div id="map">
+                    <!-- Les contrôles de carte seront ajoutés ici par JavaScript -->
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>
+                    💧 Zones inondables
+                </h2>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <div class="info-label">Niveau de risque</div>
+                        <div class="info-value">
+                            <span class="risk-badge" id="floodRisk">-</span>
+                        </div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Zone de récurrence</div>
+                        <div class="info-value" id="floodZone">-</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Distance cours d'eau</div>
+                        <div class="info-value" id="waterDistance">-</div>
+                    </div>
+                </div>
+                <div id="floodDataQuality"></div>
+            </div>
+
+            <div class="card">
+                <h2>
+                    ⚠️ Terrains contaminés
+                </h2>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <div class="info-label">Terrain actuel</div>
+                        <div class="info-value" id="contaminationStatus">-</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Dans un rayon de 500m</div>
+                        <div class="info-value" id="nearbyContamination">-</div>
+                    </div>
+                </div>
+                <div id="sitesList"></div>
+                <div id="contaminationDataQuality"></div>
+            </div>
+
+            <div class="card full-width">
+                <h2>
+                    🚒 Services d'urgence à proximité
+                </h2>
+                <div class="service-list" id="serviceList">
+                    <!-- Services will be populated here -->
+                </div>
+                <div id="servicesDataQuality"></div>
+            </div>
+
+            <div class="card full-width">
+                <h2>
+                    📊 Résumé des risques
+                </h2>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <div class="info-label">Score de risque global</div>
+                        <div class="info-value">
+                            <span class="risk-badge" id="overallRisk">-</span>
+                        </div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Facteurs de risque identifiés</div>
+                        <div class="info-value" id="riskFactors">-</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Recommandations</div>
+                        <div class="info-value" id="recommendations">-</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+    <script>
+        // Configuration de l'API backend
+        // Détecte automatiquement l'hôte courant, avec fallback configurable
+        const API_URL = window.VIGIE_IMMO_API_URL || `${window.location.protocol}//${window.location.hostname}:5001`;
+        
+        // Variables globales pour la carte
+        let map = null;
+        let marker = null;
+        let radiusCircle = null;
+        let floodZonesLayer = null;
+        let mapLegend = null;
+        let zonesVisible = true;
+
+        // Fonctions utilitaires
+        function showError(message) {
+            console.error('❌ Erreur:', message);
+            const errorEl = document.getElementById('errorMessage');
+            errorEl.textContent = message;
+            errorEl.classList.add('show');
+            setTimeout(() => {
+                errorEl.classList.remove('show');
+            }, 5000);
+        }
+
+        function hideError() {
+            document.getElementById('errorMessage').classList.remove('show');
+        }
+
+        function showLoading() {
+            document.getElementById('loadingOverlay').classList.add('active');
+        }
+
+        function hideLoading() {
+            document.getElementById('loadingOverlay').classList.remove('active');
+        }
+
+        // Gestion du formulaire
+        document.getElementById('searchForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            console.log("📝 Formulaire soumis");
+            
+            hideError();
+            
+            const address = document.getElementById('address').value.trim();
+            
+            if (!address) {
+                showError('Veuillez entrer une adresse');
+                return;
+            }
+            
+            const btn = document.getElementById('searchBtn');
+            btn.disabled = true;
+            btn.textContent = '⏳ Analyse en cours...';
+            showLoading();
+            
+            try {
+                console.log("📤 Envoi de la requête à l'API...");
+                
+                const response = await fetch(`${API_URL}/api/analyze`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ address: address })
+                });
+                
+                console.log("📥 Réponse reçue, status:", response.status);
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error("❌ Erreur détaillée:", errorText);
+                    throw new Error(`Erreur HTTP: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                console.log("📊 Données reçues:", data);
+                
+                if (data.success) {
+                    console.log("✅ Affichage des résultats");
+                    displayResults(data);
+                } else {
+                    showError(data.message || 'Erreur lors de l\'analyse de l\'adresse');
+                }
+                
+            } catch (error) {
+                console.error('❌ Erreur complète:', error);
+                showError(`Erreur: ${error.message}. Vérifiez que le serveur est démarré sur ${API_URL}`);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '🔍 Générer le rapport';
+                hideLoading();
+            }
+        });
+
+        // Fonction pour nettoyer complètement la carte
+        function clearMap() {
+            console.log("🗺️ Nettoyage complet de la carte");
+            
+            if (map) {
+                try {
+                    // Supprimer tous les contrôles personnalisés
+                    if (mapLegend) {
+                        map.removeControl(mapLegend);
+                        mapLegend = null;
+                    }
+                    
+                    // Supprimer tous les overlays
+                    if (marker) {
+                        map.removeLayer(marker);
+                        marker = null;
+                    }
+                    
+                    if (radiusCircle) {
+                        map.removeLayer(radiusCircle);
+                        radiusCircle = null;
+                    }
+                    
+                    if (floodZonesLayer) {
+                        map.removeLayer(floodZonesLayer);
+                        floodZonesLayer = null;
+                    }
+                    
+                    // Supprimer la carte elle-même
+                    map.remove();
+                    map = null;
+                    
+                    // Supprimer les contrôles personnalisés du DOM
+                    const mapControls = document.querySelector('.map-controls');
+                    if (mapControls) {
+                        mapControls.remove();
+                    }
+                    
+                    console.log("🗺️ Carte complètement nettoyée");
+                    
+                } catch (error) {
+                    console.error("❌ Erreur lors du nettoyage de la carte:", error);
+                }
+            }
+        }
+
+        // Fonction pour initialiser une nouvelle carte
+        function initMap(data) {
+            const lat = data.address.latitude;
+            const lng = data.address.longitude;
+            
+            console.log("🗺️ Initialisation carte avec:", lat, lng);
+            
+            // Nettoyer l'ancienne carte
+            clearMap();
+            
+            // Créer une nouvelle carte
+            map = L.map('map').setView([lat, lng], 15);
+            
+            // Ajouter la couche de tuiles OpenStreetMap
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors',
+                maxZoom: 19
+            }).addTo(map);
+            
+            console.log("🗺️ Nouvelle carte créée");
+            
+            // Ajouter le marqueur
+            marker = L.marker([lat, lng]).addTo(map)
+                .bindPopup(`<div class="map-popup"><b>${data.address.formatted}</b><br>Analyse des risques</div>`)
+                .openPopup();
+            
+            // Ajouter le cercle de 500m
+            radiusCircle = L.circle([lat, lng], {
+                color: '#667eea',
+                fillColor: '#667eea',
+                fillOpacity: 0.1,
+                radius: 500,
+                weight: 2
+            }).addTo(map);
+            
+            // Ajouter les contrôles de carte
+            addMapControls();
+        }
+
+        // Fonction pour ajouter les contrôles de carte
+        function addMapControls() {
+            const mapContainer = document.getElementById('map');
+            
+            // Nettoyer les anciens contrôles
+            const oldControls = mapContainer.querySelector('.map-controls');
+            if (oldControls) {
+                oldControls.remove();
+            }
+            
+            // Créer de nouveaux contrôles
+            const controlsDiv = document.createElement('div');
+            controlsDiv.className = 'map-controls';
+            
+            const toggleZonesBtn = document.createElement('button');
+            toggleZonesBtn.className = 'map-control-btn active';
+            toggleZonesBtn.id = 'toggleZonesBtn';
+            toggleZonesBtn.innerHTML = '👁️ Masquer zones';
+            toggleZonesBtn.onclick = toggleFloodZonesVisibility;
+            
+            controlsDiv.appendChild(toggleZonesBtn);
+            mapContainer.appendChild(controlsDiv);
+        }
+
+        // Fonction pour mettre à jour le bouton de bascule
+        function updateZoneToggleButton() {
+            const toggleBtn = document.getElementById('toggleZonesBtn');
+            if (!toggleBtn) return;
+            
+            if (floodZonesLayer && map && map.hasLayer(floodZonesLayer)) {
+                toggleBtn.disabled = false;
+                toggleBtn.innerHTML = '👁️ Masquer zones';
+                toggleBtn.classList.add('active');
+                zonesVisible = true;
+            } else if (floodZonesLayer) {
+                toggleBtn.disabled = false;
+                toggleBtn.innerHTML = '👁️ Afficher zones';
+                toggleBtn.classList.remove('active');
+                zonesVisible = false;
+            } else {
+                toggleBtn.disabled = true;
+                toggleBtn.innerHTML = '👁️ Aucune zone';
+                toggleBtn.classList.remove('active');
+            }
+        }
+
+        // Fonction pour basculer la visibilité des zones
+        function toggleFloodZonesVisibility() {
+            if (!floodZonesLayer || !map) {
+                console.warn("❌ Aucune zone inondable à afficher/masquer");
+                return;
+            }
+            
+            if (zonesVisible) {
+                // Masquer les zones
+                map.removeLayer(floodZonesLayer);
+                zonesVisible = false;
+                console.log("🗺️ Zones inondables masquées");
+            } else {
+                // Afficher les zones
+                floodZonesLayer.addTo(map);
+                zonesVisible = true;
+                console.log("🗺️ Zones inondables affichées");
+            }
+            
+            updateZoneToggleButton();
+        }
+
+        // Fonction principale pour afficher les résultats
+        function displayResults(data) {
+            console.log("🚀 Début de displayResults");
+            console.log("📊 Données reçues:", data);
+            
+            if (!data || !data.success) {
+                console.error("❌ Données invalides:", data);
+                showError('Données invalides reçues du serveur');
+                return;
+            }
+            
+            try {
+                // Afficher la section résultats
+                const resultsSection = document.getElementById('results');
+                if (!resultsSection) {
+                    console.error("❌ Élément #results non trouvé");
+                    return;
+                }
+                resultsSection.classList.add('active');
+                console.log("✅ Section résultats activée");
+                
+                // Adresse et municipalité
+                const displayAddress = document.getElementById('displayAddress');
+                const municipalityEl = document.getElementById('municipality');
+                
+                if (displayAddress && data.address && data.address.formatted) {
+                    displayAddress.textContent = data.address.formatted;
+                    console.log("📍 Adresse affichée:", data.address.formatted);
+                }
+                
+                if (municipalityEl && data.address) {
+                    const mun = data.address.municipality || data.address.city || data.address.region || 'Non spécifié';
+                    municipalityEl.textContent = mun;
+                }
+                
+                // Initialiser une NOUVELLE carte
+                initMap(data);
+                
+                // Afficher les zones inondables
+                displayFloodZones(data);
+                
+                // Afficher les terrains contaminés
+                displayContamination(data);
+                
+                // Afficher les services d'urgence
+                displayServices(data);
+                
+                // Afficher le résumé des risques
+                displayRiskAssessment(data);
+                
+                // Scroll vers les résultats
+                console.log("⬇️ Scroll vers les résultats...");
+                resultsSection.scrollIntoView({ 
+                    behavior: 'smooth',
+                    block: 'start'
+                });
+                
+                console.log("✅ displayResults terminé avec succès");
+                
+            } catch (error) {
+                console.error("❌ Erreur dans displayResults:", error);
+                showError(`Erreur d'affichage: ${error.message}`);
+            }
+        }
+
+        // Fonction pour afficher les zones inondables
+        function displayFloodZones(data) {
+            const flood = data.flood_zones || {};
+            console.log("💧 Données zones inondables:", flood);
+            
+            // Niveau de risque
+            const floodRiskEl = document.getElementById('floodRisk');
+            if (floodRiskEl && flood.risk_level) {
+                const riskText = {
+                    'low': 'Faible',
+                    'medium': 'Moyen', 
+                    'high': 'Élevé',
+                    'unknown': 'Non déterminé'
+                };
+                const riskLevel = flood.risk_level.toLowerCase();
+                floodRiskEl.textContent = riskText[riskLevel] || 'Non déterminé';
+                floodRiskEl.className = `risk-badge risk-${riskLevel}`;
+                console.log("💧 Risque affiché:", riskText[riskLevel]);
+            }
+            
+            // Zone de récurrence
+            const floodZoneEl = document.getElementById('floodZone');
+            if (floodZoneEl) {
+                floodZoneEl.textContent = flood.zone_type || 'Non disponible';
+            }
+            
+            // Distance à l'eau
+            const waterDistanceEl = document.getElementById('waterDistance');
+            if (waterDistanceEl && flood.water_distance) {
+                const wd = flood.water_distance;
+                waterDistanceEl.textContent = 
+                    `${wd.distance_meters || 'N/A'} mètres de ${wd.water_name || 'cours d\'eau'}`;
+            }
+            
+            showDataQuality('floodDataQuality', flood.source, flood.data_quality);
+
+            // Ajouter les zones à la carte si disponibles
+            if (flood.flood_zones_geojson && flood.flood_zones_geojson.features && flood.flood_zones_geojson.features.length > 0) {
+                console.log("🗺️ Ajout des zones inondables à la carte");
+                addFloodZonesToMap(flood.flood_zones_geojson);
+            } else {
+                console.log("🗺️ Aucune donnée de zone inondable disponible");
+                createEmptyLegend();
+            }
+        }
+
+        // Fonction pour ajouter les zones inondables à la carte
+        function addFloodZonesToMap(geojsonData) {
+            console.log("🗺️ addFloodZonesToMap appelée avec:", geojsonData);
+            
+            if (!geojsonData || !geojsonData.features || geojsonData.features.length === 0) {
+                console.warn("❌ Aucune donnée GeoJSON valide");
+                return;
+            }
+            
+            floodZonesLayer = L.geoJSON(geojsonData, {
+                style: function(feature) {
+                    return getZoneStyle(feature);
+                },
+                onEachFeature: function(feature, layer) {
+                    if (feature.properties) {
+                        const props = feature.properties;
+                        let popupContent = `<div class="map-popup"><strong>Zone inondable</strong><br>`;
+                        
+                        if (props.nom_zone) popupContent += `Nom: ${props.nom_zone}<br>`;
+                        if (props.type_zone) popupContent += `Type: ${props.type_zone}<br>`;
+                        if (props.periode_retour) popupContent += `Période: ${props.periode_retour} ans<br>`;
+                        if (props.niveau_risque) popupContent += `Risque: ${props.niveau_risque}<br>`;
+                        if (props.source) popupContent += `Source: ${props.source}<br>`;
+                        
+                        popupContent += `</div>`;
+                        layer.bindPopup(popupContent);
+                    }
+                }
+            }).addTo(map);
+            
+            createFloodZonesLegend();
+            console.log(`✅ ${geojsonData.features.length} zone(s) ajoutée(s) à la carte`);
+        }
+
+        // Fonction pour créer une légende vide
+        function createEmptyLegend() {
+            mapLegend = L.control({position: 'bottomright'});
+            
+            mapLegend.onAdd = function(map) {
+                const div = L.DomUtil.create('div', 'info legend');
+                div.style.backgroundColor = 'white';
+                div.style.padding = '10px';
+                div.style.borderRadius = '5px';
+                div.style.boxShadow = '0 0 10px rgba(0,0,0,0.2)';
+                div.style.fontSize = '12px';
+                
+                let html = '<strong>Zones inondables</strong><br>';
+                html += '<div style="margin: 5px 0; color: #666;">';
+                html += '📍 Adresse analysée<br>';
+                html += '○ Rayon d\'analyse (500m)<br><br>';
+                html += '<em>Cette adresse n\'est pas dans une zone inondable répertoriée</em>';
+                html += '</div>';
+                
+                div.innerHTML = html;
+                return div;
+            };
+            
+            mapLegend.addTo(map);
+        }
+
+        // Fonction pour créer une légende avec les zones
+        function createFloodZonesLegend() {
+            mapLegend = L.control({position: 'bottomright'});
+            
+            mapLegend.onAdd = function(map) {
+                const div = L.DomUtil.create('div', 'info legend');
+                div.style.backgroundColor = 'white';
+                div.style.padding = '10px';
+                div.style.borderRadius = '5px';
+                div.style.boxShadow = '0 0 10px rgba(0,0,0,0.2)';
+                div.style.fontSize = '12px';
+                
+                const zones = [
+                    {color: '#ff4444', label: 'Zone 20 ans - Risque élevé'},
+                    {color: '#ffaa44', label: 'Zone 100 ans - Risque moyen'},
+                    {color: '#44ff44', label: 'Zone 500 ans - Risque faible'}
+                ];
+                
+                let html = '<strong>Zones inondables</strong><br>';
+                
+                zones.forEach(zone => {
+                    html += `
+                    <div style="margin: 5px 0; display: flex; align-items: center;">
+                        <div style="width: 20px; height: 10px; background-color: ${zone.color}; 
+                             margin-right: 8px; border: 1px solid #666; opacity: 0.7;"></div>
+                        <span>${zone.label}</span>
+                    </div>`;
+                });
+                
+                html += '<div style="font-size: 10px; margin-top: 5px; color: #666;">';
+                html += '📍 Adresse analysée<br>';
+                html += '○ Rayon d\'analyse (500m)<br>';
+                html += '<em>Cliquez sur les zones pour plus d\'infos</em>';
+                html += '</div>';
+                
+                div.innerHTML = html;
+                return div;
+            };
+            
+            mapLegend.addTo(map);
+        }
+
+        // Fonction pour définir le style des zones
+        function getZoneStyle(feature) {
+            const props = feature.properties || {};
+            const periode = props.periode_retour;
+            const risque = props.niveau_risque;
+            
+            let color, fillColor, opacity, fillOpacity, weight;
+            
+            if (periode === '20' || risque === 'Élevé') {
+                color = '#ff4444';
+                fillColor = '#ff4444';
+                opacity = 0.7;
+                fillOpacity = 0.3;
+                weight = 3;
+            } else if (periode === '100' || risque === 'Moyen') {
+                color = '#ffaa44';
+                fillColor = '#ffaa44';
+                opacity = 0.7;
+                fillOpacity = 0.25;
+                weight = 2;
+            } else if (periode === '500' || risque === 'Faible') {
+                color = '#44ff44';
+                fillColor = '#44ff44';
+                opacity = 0.7;
+                fillOpacity = 0.2;
+                weight = 1;
+            } else {
+                color = '#888888';
+                fillColor = '#888888';
+                opacity = 0.6;
+                fillOpacity = 0.2;
+                weight = 1;
+            }
+            
+            return {
+                color: color,
+                fillColor: fillColor,
+                weight: weight,
+                opacity: opacity,
+                fillOpacity: fillOpacity,
+                dashArray: props.periode_retour === '500' ? '5,5' : null
+            };
+        }
+
+        // Fonction pour afficher les terrains contaminés
+        function displayContamination(data) {
+            const contamination = data.contamination || {};
+            console.log("⚠️ Données contamination:", contamination);
+            
+            showDataQuality('contaminationDataQuality', contamination.source, contamination.data_quality);
+
+            document.getElementById('contaminationStatus').textContent =
+                contamination.is_contaminated ? '⚠️ Terrain répertorié comme contaminé' : '✅ Non répertorié';
+            document.getElementById('nearbyContamination').textContent = 
+                `${contamination.nearby_count || 0} terrain(s) contaminé(s)`;
+            
+            // Liste des sites contaminés
+            const sitesListEl = document.getElementById('sitesList');
+            if (sitesListEl) {
+                if (contamination.sites && contamination.sites.length > 0) {
+                    sitesListEl.innerHTML = `
+                        <div class="site-list">
+                            ${contamination.sites.map(site => `
+                                <div class="site-item">
+                                    <div class="site-name">${site.name || 'Site inconnu'}</div>
+                                    <div class="site-distance">${site.distance || 0}m - ${site.address || 'Adresse inconnue'}</div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    `;
+                } else {
+                    sitesListEl.innerHTML = '<p style="color: #718096; font-style: italic;">Aucun site contaminé à proximité</p>';
+                }
+            }
+        }
+
+        // Fonction pour afficher les services d'urgence
+        function displayServices(data) {
+            const services = data.services || {};
+            console.log("🚒 Données services:", services);
+            const serviceList = document.getElementById('serviceList');
+            
+            showDataQuality('servicesDataQuality', services.source, services.data_quality);
+
+            if (serviceList) {
+                const serviceItems = [];
+                
+                if (services.fire_station && services.fire_station.distance !== 'N/A') {
+                    serviceItems.push({
+                        icon: '🚒',
+                        type: 'Caserne',
+                        name: services.fire_station.name || 'Inconnu',
+                        distance: services.fire_station.distance
+                    });
+                }
+                
+                if (services.hospital && services.hospital.distance !== 'N/A') {
+                    serviceItems.push({
+                        icon: '🏥',
+                        type: 'Hôpital',
+                        name: services.hospital.name || 'Inconnu',
+                        distance: services.hospital.distance
+                    });
+                }
+                
+                if (services.police_station && services.police_station.distance !== 'N/A') {
+                    serviceItems.push({
+                        icon: '👮',
+                        type: 'Poste de police',
+                        name: services.police_station.name || 'Inconnu',
+                        distance: services.police_station.distance
+                    });
+                }
+                
+                if (serviceItems.length > 0) {
+                    serviceList.innerHTML = serviceItems
+                        .sort((a, b) => a.distance - b.distance)
+                        .map(service => `
+                            <div class="service-item">
+                                <span class="service-icon">${service.icon}</span>
+                                <span><strong>${service.type}</strong> - ${service.name}</span>
+                                <span class="distance">${service.distance}m</span>
+                            </div>
+                        `).join('');
+                } else {
+                    serviceList.innerHTML = '<p style="color: #718096; font-style: italic;">Aucun service d\'urgence trouvé à proximité</p>';
+                }
+            }
+        }
+
+        // Fonction pour afficher le résumé des risques
+        function displayRiskAssessment(data) {
+            const assessment = data.risk_assessment || {};
+            console.log("📊 Données risque:", assessment);
+            const overallRiskEl = document.getElementById('overallRisk');
+            const factorsEl = document.getElementById('riskFactors');
+            const recommendationsEl = document.getElementById('recommendations');
+            
+            if (overallRiskEl && assessment.level) {
+                const riskText = {
+                    'low': 'Faible',
+                    'medium': 'Moyen', 
+                    'high': 'Élevé',
+                    'unknown': 'Non déterminé'
+                };
+                const level = assessment.level.toLowerCase();
+                overallRiskEl.textContent = `${riskText[level] || 'Non déterminé'} (${assessment.score || 0}/100)`;
+                overallRiskEl.className = `risk-badge risk-${level}`;
+            }
+            
+            if (factorsEl && assessment.factors) {
+                if (Array.isArray(assessment.factors) && assessment.factors.length > 0) {
+                    factorsEl.innerHTML = '<ul style="margin: 10px 0 0 20px;">' + 
+                        assessment.factors.map(f => `<li>${f}</li>`).join('') + 
+                        '</ul>';
+                } else {
+                    factorsEl.textContent = 'Aucun facteur de risque majeur identifié';
+                }
+            }
+            
+            if (recommendationsEl) {
+                recommendationsEl.textContent = assessment.recommendation || 'Aucune recommandation spécifique';
+            }
+        }
+
+        // Fonction pour afficher la qualité des données
+        function showDataQuality(elementId, source, dataQuality) {
+            const el = document.getElementById(elementId);
+            if (!el) return;
+
+            if (!dataQuality || dataQuality === 'Haute') {
+                el.innerHTML = '';
+                return;
+            }
+
+            const isUnavailable = dataQuality === 'Indisponible';
+            const cssClass = isUnavailable ? 'data-quality-warning unavailable' : 'data-quality-warning';
+            const icon = isUnavailable ? '&#9888;' : '&#9432;';
+            const msg = isUnavailable
+                ? `Données indisponibles — ${source || 'source inconnue'}`
+                : `Données estimées (qualité : ${dataQuality}) — Source : ${source || 'non spécifiée'}`;
+
+            el.innerHTML = `<div class="${cssClass}">${icon} ${msg}</div>`;
+        }
+
+        // Initialisation
+        console.log("🚀 Application initialisée");
+        console.log(`🌐 API URL: ${API_URL}`);
+    </script>
+</body>
+</html>
