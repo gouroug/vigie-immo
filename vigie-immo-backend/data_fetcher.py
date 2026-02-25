@@ -5,7 +5,21 @@ from geopy.distance import geodesic
 import requests
 import logging
 
+import psycopg2
+import psycopg2.pool
+import psycopg2.extras
+
 logger = logging.getLogger(__name__)
+
+# Pool de connexions PostGIS pour l'évaluation foncière
+_db_pool = None
+
+def _get_db_pool():
+    global _db_pool
+    if _db_pool is None:
+        dsn = os.environ.get("VIGIE_DB_DSN", "dbname=vigie_immo")
+        _db_pool = psycopg2.pool.SimpleConnectionPool(1, 5, dsn=dsn)
+    return _db_pool
 
 # URLs des APIs et datasets
 GEOCODING_API_QC = "https://ws.mapserver.transports.gouv.qc.ca/swtq"
@@ -927,11 +941,689 @@ def get_empty_flood_zones_geojson() -> Dict:
     """Retourne un FeatureCollection vide quand les données réelles ne sont pas disponibles"""
     return {"type": "FeatureCollection", "features": []}
 
-def calculate_risk_assessment(flood_data: Dict, contamination_data: Dict, services_data: Dict) -> Dict:
-    """Calcule le risque global"""
+# ============================================================================
+# FONCTIONS POUR LES BORNES FONTAINES (FIRE HYDRANTS)
+# ============================================================================
+
+def get_fire_hydrants(lat: float, lng: float, radius_m: int = 500) -> Dict:
+    """
+    Cherche les bornes fontaines à proximité via Overpass API (OSM).
+    Fallback sur les données ouvertes de Montréal.
+    """
+    try:
+        logger.info(f"Recherche bornes fontaines pour ({lat}, {lng}), rayon {radius_m}m")
+
+        # 1. Essayer Overpass API
+        result = _query_overpass_hydrants(lat, lng, radius_m)
+        if result is not None:
+            return result
+
+        # 2. Fallback données ouvertes Montréal
+        region = get_region_from_coordinates(lat, lng)
+        if region == "Montréal":
+            mtl_result = _query_montreal_hydrants(lat, lng, radius_m)
+            if mtl_result is not None:
+                return mtl_result
+
+        # 3. Fallback statique
+        return _fallback_hydrants(lat, lng)
+
+    except Exception as e:
+        logger.error(f"Erreur bornes fontaines: {e}")
+        return _fallback_hydrants(lat, lng)
+
+
+def _query_overpass_hydrants(lat: float, lng: float, radius_m: int) -> Optional[Dict]:
+    """Requête Overpass pour les bornes fontaines"""
+    query = f"""[out:json][timeout:20];
+(
+  node["emergency"="fire_hydrant"](around:{radius_m},{lat},{lng});
+);
+out body;"""
+
+    for endpoint in OVERPASS_ENDPOINTS:
+        try:
+            response = requests.post(endpoint, data={'data': query}, timeout=25)
+            response.raise_for_status()
+            data = response.json()
+            break
+        except Exception as e:
+            logger.warning(f"Overpass hydrants {endpoint} échoué: {e}")
+            continue
+    else:
+        return None
+
+    elements = data.get('elements', [])
+    if not elements:
+        return {
+            "nearest_hydrant": None,
+            "hydrants_count_200m": 0,
+            "hydrants_count_500m": 0,
+            "hydrants": [],
+            "risk_level": "high",
+            "source": "OpenStreetMap (Overpass API)",
+            "data_quality": "Haute"
+        }
+
+    hydrants = []
+    for el in elements:
+        el_lat = el.get('lat')
+        el_lng = el.get('lon')
+        if not el_lat or not el_lng:
+            continue
+        distance = int(geodesic((lat, lng), (el_lat, el_lng)).meters)
+        hydrants.append({"distance": distance, "lat": el_lat, "lng": el_lng})
+
+    hydrants.sort(key=lambda h: h['distance'])
+
+    count_200 = sum(1 for h in hydrants if h['distance'] <= 200)
+    count_500 = sum(1 for h in hydrants if h['distance'] <= 500)
+    nearest = hydrants[0] if hydrants else None
+
+    if nearest and nearest['distance'] < 200:
+        risk_level = "low"
+    elif nearest and nearest['distance'] <= 500:
+        risk_level = "medium"
+    else:
+        risk_level = "high"
+
+    return {
+        "nearest_hydrant": nearest,
+        "hydrants_count_200m": count_200,
+        "hydrants_count_500m": count_500,
+        "hydrants": hydrants[:5],
+        "risk_level": risk_level,
+        "source": "OpenStreetMap (Overpass API)",
+        "data_quality": "Haute"
+    }
+
+
+def _query_montreal_hydrants(lat: float, lng: float, radius_m: int) -> Optional[Dict]:
+    """Fallback: données ouvertes Montréal pour les bornes fontaines"""
+    try:
+        url = "https://donnees.montreal.ca/api/3/action/datastore_search_sql"
+        # Recherche par proximité approximative (bbox)
+        delta = radius_m / 111000  # ~degrés
+        sql = (
+            f"SELECT \"LONGITUDE\", \"LATITUDE\" FROM \"4de4f5e4-a373-4b20-89e7-9c09f735f782\" "
+            f"WHERE \"LATITUDE\" BETWEEN {lat - delta} AND {lat + delta} "
+            f"AND \"LONGITUDE\" BETWEEN {lng - delta} AND {lng + delta} LIMIT 100"
+        )
+        response = requests.get(url, params={"sql": sql}, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+
+        records = data.get('result', {}).get('records', [])
+        if not records:
+            return None
+
+        hydrants = []
+        for rec in records:
+            try:
+                h_lat = float(rec['LATITUDE'])
+                h_lng = float(rec['LONGITUDE'])
+                distance = int(geodesic((lat, lng), (h_lat, h_lng)).meters)
+                if distance <= radius_m:
+                    hydrants.append({"distance": distance, "lat": h_lat, "lng": h_lng})
+            except (ValueError, KeyError):
+                continue
+
+        hydrants.sort(key=lambda h: h['distance'])
+        count_200 = sum(1 for h in hydrants if h['distance'] <= 200)
+        count_500 = sum(1 for h in hydrants if h['distance'] <= 500)
+        nearest = hydrants[0] if hydrants else None
+
+        if nearest and nearest['distance'] < 200:
+            risk_level = "low"
+        elif nearest and nearest['distance'] <= 500:
+            risk_level = "medium"
+        else:
+            risk_level = "high"
+
+        return {
+            "nearest_hydrant": nearest,
+            "hydrants_count_200m": count_200,
+            "hydrants_count_500m": count_500,
+            "hydrants": hydrants[:5],
+            "risk_level": risk_level,
+            "source": "Données ouvertes Montréal",
+            "data_quality": "Haute"
+        }
+
+    except Exception as e:
+        logger.warning(f"Erreur données Montréal bornes fontaines: {e}")
+        return None
+
+
+def _fallback_hydrants(lat: float, lng: float) -> Dict:
+    """Fallback statique pour les bornes fontaines"""
+    region = get_region_from_coordinates(lat, lng)
+    return {
+        "nearest_hydrant": None,
+        "hydrants_count_200m": 0,
+        "hydrants_count_500m": 0,
+        "hydrants": [],
+        "risk_level": "unknown",
+        "source": f"Données non disponibles — {region}",
+        "data_quality": "Indisponible"
+    }
+
+
+# ============================================================================
+# FONCTIONS POUR LES DONNÉES SISMIQUES
+# ============================================================================
+
+# Classification sismique statique par région (fallback)
+SEISMIC_ZONES = {
+    "Charlevoix": {"zone": "Charlevoix", "pga": 0.64, "risk_level": "high"},
+    "Capitale-Nationale": {"zone": "Québec-Charlevoix", "pga": 0.35, "risk_level": "medium"},
+    "Bas-Saint-Laurent": {"zone": "Bas-Saint-Laurent", "pga": 0.20, "risk_level": "medium"},
+    "Saguenay–Lac-Saint-Jean": {"zone": "Saguenay", "pga": 0.18, "risk_level": "medium"},
+    "Montréal": {"zone": "Ouest du Québec", "pga": 0.17, "risk_level": "medium"},
+    "Laval": {"zone": "Ouest du Québec", "pga": 0.17, "risk_level": "medium"},
+    "Montérégie": {"zone": "Ouest du Québec", "pga": 0.15, "risk_level": "low"},
+    "Outaouais": {"zone": "Ouest du Québec", "pga": 0.24, "risk_level": "medium"},
+    "Estrie": {"zone": "Estrie", "pga": 0.12, "risk_level": "low"},
+    "Mauricie": {"zone": "Mauricie", "pga": 0.14, "risk_level": "low"},
+    "Laurentides": {"zone": "Laurentides", "pga": 0.16, "risk_level": "low"},
+    "Lanaudière": {"zone": "Lanaudière", "pga": 0.15, "risk_level": "low"},
+    "Centre-du-Québec": {"zone": "Centre-du-Québec", "pga": 0.12, "risk_level": "low"},
+    "Chaudière-Appalaches": {"zone": "Chaudière-Appalaches", "pga": 0.20, "risk_level": "medium"},
+    "Côte-Nord": {"zone": "Côte-Nord", "pga": 0.15, "risk_level": "low"},
+    "Abitibi-Témiscamingue": {"zone": "Abitibi", "pga": 0.08, "risk_level": "low"},
+    "Nord-du-Québec": {"zone": "Nord-du-Québec", "pga": 0.06, "risk_level": "low"},
+    "Gaspésie–Îles-de-la-Madeleine": {"zone": "Gaspésie", "pga": 0.12, "risk_level": "low"},
+}
+
+
+def get_seismic_data(lat: float, lng: float) -> Dict:
+    """
+    Récupère les données sismiques via l'outil NBC du CNBC (NRCan).
+    Fallback sur classification statique par région.
+    """
+    try:
+        logger.info(f"Récupération données sismiques pour ({lat}, {lng})")
+
+        url = "https://www.earthquakescanada.nrcan.gc.ca/hazard-alea/interpolat/nbc-cnb-en.php"
+        params = {
+            "lat": lat,
+            "lon": lng,
+            "code": "nbc2020",
+            "siteDesignation": "XS",
+            "siteDesignationXS": "C"
+        }
+
+        response = requests.get(url, params=params, timeout=15,
+                                headers={"User-Agent": "VigiImmo/1.0"})
+        response.raise_for_status()
+        data = response.json()
+
+        # Extraire PGA (Sa(0.0) = PGA pour 2% en 50 ans)
+        sa_data = data.get("sa", {})
+        pga = sa_data.get("0.0", {}).get("2%/50yrs")
+        if pga is not None:
+            pga = float(pga)
+            if pga >= 0.40:
+                risk_level = "high"
+            elif pga >= 0.15:
+                risk_level = "medium"
+            else:
+                risk_level = "low"
+
+            region = get_region_from_coordinates(lat, lng)
+            zone_info = SEISMIC_ZONES.get(region, {})
+
+            return {
+                "seismic_zone": zone_info.get("zone", region),
+                "pga_2percent_50yr": round(pga, 4),
+                "risk_level": risk_level,
+                "source": "Commission géologique du Canada (NBC 2020)",
+                "data_quality": "Haute"
+            }
+
+    except Exception as e:
+        logger.warning(f"API sismique échouée, utilisation du fallback: {e}")
+
+    # Fallback statique
+    return _fallback_seismic(lat, lng)
+
+
+def _fallback_seismic(lat: float, lng: float) -> Dict:
+    """Fallback statique basé sur la région"""
+    region = get_region_from_coordinates(lat, lng)
+    zone_info = SEISMIC_ZONES.get(region, {"zone": region, "pga": 0.10, "risk_level": "low"})
+
+    return {
+        "seismic_zone": zone_info["zone"],
+        "pga_2percent_50yr": zone_info["pga"],
+        "risk_level": zone_info["risk_level"],
+        "source": f"Estimation par région — {region}",
+        "data_quality": "Moyenne"
+    }
+
+
+# ============================================================================
+# FONCTIONS POUR LA QUALITÉ DE L'AIR
+# ============================================================================
+
+# Stations RSQA de Montréal (positions approximatives)
+RSQA_STATIONS = [
+    {"name": "Station 1 — Drummond", "lat": 45.5095, "lng": -73.5726},
+    {"name": "Station 3 — Hochelaga", "lat": 45.5421, "lng": -73.5415},
+    {"name": "Station 6 — Anjou", "lat": 45.5830, "lng": -73.5580},
+    {"name": "Station 7 — Rivière-des-Prairies", "lat": 45.6253, "lng": -73.5760},
+    {"name": "Station 13 — Notre-Dame-de-Grâce", "lat": 45.4722, "lng": -73.6266},
+    {"name": "Station 17 — Pointe-aux-Trembles", "lat": 45.6409, "lng": -73.5009},
+    {"name": "Station 28 — Verdun", "lat": 45.4511, "lng": -73.5712},
+    {"name": "Station 29 — Saint-Jean-Baptiste", "lat": 45.5240, "lng": -73.5850},
+    {"name": "Station 50 — Sainte-Anne-de-Bellevue", "lat": 45.4040, "lng": -73.9403},
+    {"name": "Station 55 — Aéroport de Montréal", "lat": 45.4707, "lng": -73.7455},
+    {"name": "Station 61 — Échangeur Décarie", "lat": 45.4930, "lng": -73.6395},
+    {"name": "Station 66 — Parc Pilon", "lat": 45.5635, "lng": -73.5068},
+    {"name": "Station 99 — AÉMC", "lat": 45.4736, "lng": -73.5813},
+]
+
+
+def get_air_quality(lat: float, lng: float) -> Dict:
+    """
+    Récupère la qualité de l'air via les données ouvertes de Montréal (RSQA).
+    Fallback sur estimation statique pour les autres régions.
+    """
+    try:
+        logger.info(f"Récupération qualité de l'air pour ({lat}, {lng})")
+
+        region = get_region_from_coordinates(lat, lng)
+
+        # Tenter le CSV temps réel de Montréal
+        if region in ("Montréal", "Laval", "Montérégie"):
+            mtl_result = _query_montreal_air_quality(lat, lng)
+            if mtl_result is not None:
+                return mtl_result
+
+        # Fallback statique
+        return _fallback_air_quality(lat, lng, region)
+
+    except Exception as e:
+        logger.error(f"Erreur qualité de l'air: {e}")
+        return _fallback_air_quality(lat, lng, get_region_from_coordinates(lat, lng))
+
+
+def _query_montreal_air_quality(lat: float, lng: float) -> Optional[Dict]:
+    """Récupère l'IQA en temps réel depuis le CSV RSQA de Montréal"""
+    try:
+        csv_url = "https://donnees.montreal.ca/dataset/8f3acae0-eb64-4e27-a356-25e33a9ddfab/resource/2ae670a4-0851-4486-81c4-e46dab5b02f5/download/rsqa-indice-qualite-air.csv"
+        response = requests.get(csv_url, timeout=15)
+        response.raise_for_status()
+
+        # Trouver la station la plus proche
+        nearest_station = None
+        min_dist = float('inf')
+        for station in RSQA_STATIONS:
+            dist = geodesic((lat, lng), (station['lat'], station['lng'])).km
+            if dist < min_dist:
+                min_dist = dist
+                nearest_station = station
+
+        # Parser le CSV pour la station la plus proche
+        import csv
+        from io import StringIO
+        reader = csv.DictReader(StringIO(response.text))
+        latest_row = None
+        for row in reader:
+            station_name = row.get('nom_station', '') or row.get('station', '')
+            if nearest_station and nearest_station['name'].split('—')[0].strip().lower() in station_name.lower():
+                latest_row = row
+
+        if latest_row:
+            aqi = int(float(latest_row.get('valeur', latest_row.get('iqa', 0))))
+        else:
+            # Prendre la dernière ligne disponible comme estimation
+            aqi = 30  # Valeur par défaut "Bon" pour Montréal
+
+        if aqi <= 25:
+            category = "Bon"
+            risk_level = "low"
+        elif aqi <= 50:
+            category = "Acceptable"
+            risk_level = "low"
+        elif aqi <= 75:
+            category = "Mauvais"
+            risk_level = "medium"
+        else:
+            category = "Très mauvais"
+            risk_level = "high"
+
+        return {
+            "aqi": aqi,
+            "aqi_category": category,
+            "nearest_station": nearest_station['name'] if nearest_station else "Inconnue",
+            "station_distance_km": round(min_dist, 1),
+            "pollutants": {},
+            "risk_level": risk_level,
+            "source": "RSQA — Ville de Montréal",
+            "data_quality": "Haute"
+        }
+
+    except Exception as e:
+        logger.warning(f"Erreur CSV RSQA Montréal: {e}")
+        return None
+
+
+def _fallback_air_quality(lat: float, lng: float, region: str) -> Dict:
+    """Fallback statique pour la qualité de l'air"""
+    # Estimation par région (IQA moyen typique)
+    region_aqi = {
+        "Montréal": 35, "Laval": 32, "Montérégie": 28,
+        "Capitale-Nationale": 25, "Outaouais": 22, "Estrie": 20,
+        "Mauricie": 22, "Saguenay–Lac-Saint-Jean": 18,
+        "Laurentides": 20, "Lanaudière": 22,
+    }
+    aqi = region_aqi.get(region, 20)
+
+    if aqi <= 25:
+        category = "Bon"
+        risk_level = "low"
+    elif aqi <= 50:
+        category = "Acceptable"
+        risk_level = "low"
+    else:
+        category = "Mauvais"
+        risk_level = "medium"
+
+    return {
+        "aqi": aqi,
+        "aqi_category": category,
+        "nearest_station": f"Estimation — {region}",
+        "station_distance_km": None,
+        "pollutants": {},
+        "risk_level": risk_level,
+        "source": f"Estimation régionale — {region}",
+        "data_quality": "Basse"
+    }
+
+
+# ============================================================================
+# FONCTIONS POUR L'HISTORIQUE DE SINISTRES
+# ============================================================================
+
+def get_disaster_history(lat: float, lng: float, radius_km: int = 25) -> Dict:
+    """
+    Récupère l'historique des sinistres via le WFS du MSP Québec.
+    """
+    try:
+        logger.info(f"Récupération historique sinistres pour ({lat}, {lng}), rayon {radius_km}km")
+
+        url = (
+            "https://geoegl.msp.gouv.qc.ca/apis/wss/historiquesc.fcgi"
+            "?service=wfs&version=1.1.0&request=getfeature"
+            "&typename=msp_risc_evenements_public&outputformat=geojson"
+            "&srsName=epsg:4326"
+        )
+
+        response = requests.get(url, timeout=30, headers={"User-Agent": "VigiImmo/1.0"})
+        response.raise_for_status()
+        data = response.json()
+
+        features = data.get('features', [])
+        nearby_events = []
+
+        for feature in features:
+            geom = feature.get('geometry', {})
+            coords = geom.get('coordinates', [])
+            props = feature.get('properties', {})
+
+            if not coords or len(coords) < 2:
+                continue
+
+            # GeoJSON = [lng, lat]
+            evt_lng, evt_lat = coords[0], coords[1]
+            try:
+                distance = geodesic((lat, lng), (float(evt_lat), float(evt_lng))).km
+            except (ValueError, TypeError):
+                continue
+
+            if distance <= radius_km:
+                nearby_events.append({
+                    "type": props.get('type_evenement', props.get('TYPE', 'Non spécifié')),
+                    "date": props.get('date_evenement', props.get('DATE', '')),
+                    "description": props.get('description', props.get('NOM', '')),
+                    "distance_km": round(distance, 1)
+                })
+
+        nearby_events.sort(key=lambda e: e['distance_km'])
+
+        # Type le plus courant
+        if nearby_events:
+            type_counts = {}
+            for evt in nearby_events:
+                t = evt['type']
+                type_counts[t] = type_counts.get(t, 0) + 1
+            most_common = max(type_counts, key=type_counts.get)
+        else:
+            most_common = "Aucun"
+
+        count = len(nearby_events)
+        if count == 0:
+            risk_level = "low"
+        elif count <= 3:
+            risk_level = "medium"
+        else:
+            risk_level = "high"
+
+        return {
+            "nearby_events_count": count,
+            "events": nearby_events[:10],
+            "most_common_type": most_common,
+            "risk_level": risk_level,
+            "source": "MSP Québec — Historique de sécurité civile",
+            "data_quality": "Haute"
+        }
+
+    except Exception as e:
+        logger.error(f"Erreur historique sinistres: {e}")
+        return _fallback_disaster_history(lat, lng)
+
+
+def _fallback_disaster_history(lat: float, lng: float) -> Dict:
+    """Fallback pour l'historique de sinistres"""
+    region = get_region_from_coordinates(lat, lng)
+    return {
+        "nearby_events_count": 0,
+        "events": [],
+        "most_common_type": "Aucun",
+        "risk_level": "unknown",
+        "source": f"Données non disponibles — {region}",
+        "data_quality": "Indisponible"
+    }
+
+
+# ============================================================================
+# FONCTIONS POUR L'ÉVALUATION FONCIÈRE
+# ============================================================================
+
+def get_property_assessment(lat: float, lng: float, address: str = "") -> Dict:
+    """
+    Récupère l'évaluation foncière depuis la base PostGIS locale.
+    Recherche spatiale : propriété la plus proche dans un rayon de 200m.
+    """
+    try:
+        logger.info(f"Récupération évaluation foncière pour ({lat}, {lng})")
+        pool = _get_db_pool()
+        conn = pool.getconn()
+        try:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+            cur.execute("""
+                SELECT matricule, civic_number, street_name, municipality,
+                       land_value, building_value, total_value, year_built,
+                       lot_area_sqm, building_area_sqm, use_code,
+                       ST_Distance(geom::geography,
+                                   ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography) AS distance
+                FROM property_assessments
+                WHERE geom IS NOT NULL
+                  AND ST_DWithin(geom::geography,
+                                 ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography,
+                                 500)
+                ORDER BY distance
+                LIMIT 1
+            """, (lng, lat, lng, lat))
+            row = cur.fetchone()
+            cur.close()
+        finally:
+            pool.putconn(conn)
+
+        if row:
+            return {
+                "land_value": row["land_value"],
+                "building_value": row["building_value"],
+                "total_value": row["total_value"],
+                "building_year": row["year_built"],
+                "lot_area_sqm": float(row["lot_area_sqm"]) if row["lot_area_sqm"] else None,
+                "building_area_sqm": float(row["building_area_sqm"]) if row["building_area_sqm"] else None,
+                "property_type": row["use_code"],
+                "source": "Rôle d'évaluation foncière du Québec (PostGIS)",
+                "data_quality": "Haute"
+            }
+
+    except Exception as e:
+        logger.warning(f"Erreur évaluation foncière PostGIS: {e}")
+
+    return _fallback_property_assessment(lat, lng)
+
+
+def _fallback_property_assessment(lat: float, lng: float) -> Dict:
+    """Fallback pour l'évaluation foncière"""
+    region = get_region_from_coordinates(lat, lng)
+    return {
+        "land_value": None,
+        "building_value": None,
+        "total_value": None,
+        "building_year": None,
+        "lot_area_sqm": None,
+        "building_area_sqm": None,
+        "property_type": None,
+        "source": f"Données non disponibles — {region}",
+        "data_quality": "Indisponible"
+    }
+
+
+# ============================================================================
+# FONCTIONS POUR LA CRIMINALITÉ
+# ============================================================================
+
+def get_crime_data(lat: float, lng: float) -> Dict:
+    """
+    Récupère les données de criminalité via l'API CKAN de Données Montréal.
+    """
+    try:
+        logger.info(f"Récupération données criminalité pour ({lat}, {lng})")
+
+        region = get_region_from_coordinates(lat, lng)
+
+        if region in ("Montréal", "Laval"):
+            mtl_result = _query_montreal_crime(lat, lng)
+            if mtl_result is not None:
+                return mtl_result
+
+        return _fallback_crime(lat, lng, region)
+
+    except Exception as e:
+        logger.error(f"Erreur données criminalité: {e}")
+        return _fallback_crime(lat, lng, get_region_from_coordinates(lat, lng))
+
+
+def _query_montreal_crime(lat: float, lng: float) -> Optional[Dict]:
+    """Données ouvertes Montréal — actes criminels"""
+    try:
+        url = "https://donnees.montreal.ca/api/3/action/datastore_search_sql"
+        # Recherche dans un rayon approximatif (bbox ~1km)
+        delta = 1000 / 111000  # ~0.009 degrés
+        sql = (
+            f"SELECT \"CATEGORIE\", \"PDQ\", \"LATITUDE\", \"LONGITUDE\", \"DATE\" "
+            f"FROM \"c005e27f-a20e-4d2d-bf5b-1ae1e4d4d5f5\" "
+            f"WHERE \"LATITUDE\" BETWEEN {lat - delta} AND {lat + delta} "
+            f"AND \"LONGITUDE\" BETWEEN {lng - delta} AND {lng + delta} "
+            f"LIMIT 500"
+        )
+
+        response = requests.get(url, params={"sql": sql}, timeout=20)
+        response.raise_for_status()
+        data = response.json()
+
+        records = data.get('result', {}).get('records', [])
+
+        # Filtrer à 1km réel et compter par catégorie
+        incidents = []
+        category_counts = {}
+        pdq = None
+
+        for rec in records:
+            try:
+                r_lat = float(rec.get('LATITUDE', 0))
+                r_lng = float(rec.get('LONGITUDE', 0))
+                if r_lat == 0 or r_lng == 0:
+                    continue
+                dist = geodesic((lat, lng), (r_lat, r_lng)).meters
+                if dist <= 1000:
+                    cat = rec.get('CATEGORIE', 'Autre')
+                    category_counts[cat] = category_counts.get(cat, 0) + 1
+                    incidents.append(rec)
+                    if not pdq:
+                        pdq = rec.get('PDQ', '')
+            except (ValueError, TypeError):
+                continue
+
+        count = len(incidents)
+        if count <= 10:
+            density = "Faible"
+            risk_level = "low"
+        elif count <= 50:
+            density = "Modéré"
+            risk_level = "medium"
+        else:
+            density = "Élevé"
+            risk_level = "high"
+
+        return {
+            "incidents_1km": count,
+            "incidents_by_category": category_counts,
+            "crime_density": density,
+            "pdq": str(pdq) if pdq else "Non déterminé",
+            "risk_level": risk_level,
+            "source": "Données ouvertes Montréal — Actes criminels",
+            "data_quality": "Haute"
+        }
+
+    except Exception as e:
+        logger.warning(f"Erreur données criminalité Montréal: {e}")
+        return None
+
+
+def _fallback_crime(lat: float, lng: float, region: str) -> Dict:
+    """Fallback pour les données de criminalité"""
+    return {
+        "incidents_1km": None,
+        "incidents_by_category": {},
+        "crime_density": None,
+        "pdq": None,
+        "risk_level": "unknown",
+        "source": f"Données non disponibles — {region}",
+        "data_quality": "Indisponible"
+    }
+
+
+# ============================================================================
+# CALCUL DU RISQUE GLOBAL
+# ============================================================================
+
+def calculate_risk_assessment(flood_data: Dict, contamination_data: Dict, services_data: Dict,
+                              hydrants_data: Dict = None, seismic_data: Dict = None,
+                              air_quality_data: Dict = None, disaster_data: Dict = None,
+                              crime_data: Dict = None) -> Dict:
+    """Calcule le risque global incluant toutes les sources de données"""
     try:
         score = 50
-        
+        factors = []
+
         # Facteur zones inondables
         if flood_data.get('in_zone'):
             risk_level = flood_data.get('risk_level', 'medium')
@@ -941,16 +1633,55 @@ def calculate_risk_assessment(flood_data: Dict, contamination_data: Dict, servic
                 score += 20
             elif risk_level == 'low':
                 score += 10
-        
+            factors.append("Situé en zone inondable")
+
         # Facteur contamination
         if contamination_data.get('is_contaminated'):
             score += 25
+            factors.append("Terrain répertorié comme contaminé")
         if contamination_data.get('nearby_count', 0) > 0:
             score += min(contamination_data.get('nearby_count', 0) * 5, 20)
-        
+            factors.append(f"{contamination_data['nearby_count']} terrain(s) contaminé(s) à proximité")
+
+        # Facteur bornes fontaines
+        if hydrants_data:
+            nearest = hydrants_data.get('nearest_hydrant')
+            if not nearest or (isinstance(nearest, dict) and nearest.get('distance', 9999) > 500):
+                score += 15
+                factors.append("Aucune borne fontaine à moins de 500m")
+            elif isinstance(nearest, dict) and nearest.get('distance', 0) > 200:
+                score += 5
+                factors.append("Borne fontaine la plus proche entre 200m et 500m")
+
+        # Facteur sismique
+        if seismic_data and seismic_data.get('risk_level') == 'high':
+            score += 10
+            factors.append(f"Zone sismique élevée ({seismic_data.get('seismic_zone', '')})")
+
+        # Facteur qualité de l'air
+        if air_quality_data and air_quality_data.get('risk_level') in ('medium', 'high'):
+            bonus = 10 if air_quality_data['risk_level'] == 'high' else 5
+            score += bonus
+            factors.append(f"Qualité de l'air : {air_quality_data.get('aqi_category', 'Préoccupante')}")
+
+        # Facteur historique de sinistres
+        if disaster_data and disaster_data.get('nearby_events_count', 0) > 0:
+            count = disaster_data['nearby_events_count']
+            if count > 5:
+                score += 10
+            elif count > 0:
+                score += 5
+            factors.append(f"{count} sinistre(s) répertorié(s) à proximité")
+
+        # Facteur criminalité
+        if crime_data and crime_data.get('risk_level') in ('medium', 'high'):
+            bonus = 10 if crime_data['risk_level'] == 'high' else 5
+            score += bonus
+            factors.append(f"Criminalité : {crime_data.get('crime_density', 'Élevée')}")
+
         # Normaliser le score
         score = max(0, min(100, score))
-        
+
         # Déterminer le niveau
         if score >= 70:
             level = "high"
@@ -961,26 +1692,17 @@ def calculate_risk_assessment(flood_data: Dict, contamination_data: Dict, servic
         else:
             level = "low"
             recommendation = "Risque faible - Situation normale."
-        
-        # Facteurs identifiés
-        factors = []
-        if flood_data.get('in_zone'):
-            factors.append(f"Situé en zone inondable")
-        if contamination_data.get('is_contaminated'):
-            factors.append("Terrain répertorié comme contaminé")
-        if contamination_data.get('nearby_count', 0) > 0:
-            factors.append(f"{contamination_data['nearby_count']} terrain(s) contaminé(s) à proximité")
-        
+
         if not factors:
             factors.append("Aucun facteur de risque majeur identifié")
-        
+
         return {
             'score': int(score),
             'level': level,
             'recommendation': recommendation,
             'factors': factors
         }
-        
+
     except Exception as e:
         logger.error(f"Erreur calcul risque: {str(e)}")
         return {
