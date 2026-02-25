@@ -40,7 +40,8 @@ app = Flask(__name__)
 
 _origins_env = os.environ.get('ALLOWED_ORIGINS', '').strip()
 ALLOWED_ORIGINS = [o for o in _origins_env.split(',') if o] if _origins_env else []
-CORS(app, origins=ALLOWED_ORIGINS if ALLOWED_ORIGINS else None)
+if ALLOWED_ORIGINS:
+    CORS(app, origins=ALLOWED_ORIGINS)
 
 limiter = Limiter(
     get_remote_address,
