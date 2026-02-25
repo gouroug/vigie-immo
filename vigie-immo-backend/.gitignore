@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+data/*.gpkg
+data/*.geojson
+*.egg-info/
+dist/
+.pytest_cache/

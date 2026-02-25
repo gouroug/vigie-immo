@@ -1,7 +1,6 @@
 import { createContext, useContext, useState, useCallback, useRef } from 'react';
 
-const API_URL = import.meta.env.VITE_API_URL ||
-  `${window.location.protocol}//${window.location.hostname}:5001`;
+const API_URL = import.meta.env.VITE_API_URL || window.location.origin;
 
 const AuthContext = createContext(null);
 

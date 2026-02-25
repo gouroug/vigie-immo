@@ -38,11 +38,9 @@ from auth import (
 
 app = Flask(__name__)
 
-ALLOWED_ORIGINS = os.environ.get(
-    'ALLOWED_ORIGINS',
-    'http://192.168.0.29,http://192.168.0.29:5173,http://localhost,http://localhost:5173'
-).split(',')
-CORS(app, origins=ALLOWED_ORIGINS)
+_origins_env = os.environ.get('ALLOWED_ORIGINS', '').strip()
+ALLOWED_ORIGINS = [o for o in _origins_env.split(',') if o] if _origins_env else []
+CORS(app, origins=ALLOWED_ORIGINS if ALLOWED_ORIGINS else None)
 
 limiter = Limiter(
     get_remote_address,
@@ -51,8 +49,9 @@ limiter = Limiter(
     storage_uri="memory://"
 )
 
+_log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=getattr(logging, _log_level, logging.INFO),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
